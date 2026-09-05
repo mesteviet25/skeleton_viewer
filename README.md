@@ -17,14 +17,23 @@ Requires VPN / on-site access to `db1.drivelinebaseball.com`.
 
 ## The viewer
 
-- Two panels, one per hitter, drawn at a **fixed 2.6 m vertical scale** and anchored to the floor
+- **Hitter picker** at the top: each name is a toggle. Deselect one and the remaining hitter goes
+  full width; the last visible hitter cannot be turned off. `build.py` takes any number of names, so
+  the picker scales past two.
+- One panel per hitter, drawn at a **fixed 2.0 m vertical scale** and anchored to the floor
   (z = 0), so stature and posture are directly comparable between panels.
 - **Playback is contact-aligned**: tick 0 is `events.bat_contact_time` for both hitters, so every
   frame compares the same instant of the swing even though their swings run different lengths.
   The tick range is the overlap of the two swings.
-- Bat is goldenrod, body is dark grey, grey connectors bridge the joints, red dot is
+- Bat is goldenrod `#FFA300`, body is white, grey connectors bridge the joints, red dot is
   `model_CoMPos`. Play / scrub / 0.1x-0.25x-1x, jump to load / foot plant / contact,
   catcher / side / top camera presets, drag to orbit, scroll to zoom.
+- **Driveline branded** off `~/.claude/skills/driveline-baseball-design`: black canvas, `#111`
+  cards, `#262626` header and control bar, goldenrod accent, Gotham labels over Lato data, zero
+  shadows, 8 px radii. The logo PNG and the Gotham OTFs are inlined as data URIs so the page keeps
+  its identity offline; Lato is the one network reference (Google Fonts) and degrades to the system
+  sans without it. Athlete names stay Title Case per the brand rule; every other label is uppercase
+  Gotham.
 
 ## Data
 

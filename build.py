@@ -21,6 +21,7 @@ import numpy as np
 import pymysql
 
 REPO = Path(__file__).resolve().parent
+BRAND = Path.home() / ".claude" / "skills" / "driveline-baseball-design"
 
 # prox->dist pairs drawn as lines. Theia segment codes: rpv pelvis, rta thorax, rhe head,
 # l/r ar upper arm, fa forearm, ha hand, th thigh, sk shank, ft foot.
@@ -78,6 +79,11 @@ def decode(b64):
     raw = base64.b64decode(b64)
     d = json.loads(gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw)
     return np.array([d["0"], d["1"], d["2"]], dtype=float)
+
+
+def data_uri(path, mime):
+    """Brand assets are inlined so the page stays a single offline file."""
+    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
 
 
 def best_swing(cur, name):
@@ -171,44 +177,81 @@ def build_swing(cur, name):
 HTML = r"""<!doctype html>
 <meta charset="utf-8">
 <title>Swing Skeletons</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
 <style>
-  :root { --ink:#1b1b1b; --mute:#6b6b6b; --line:#d8d8d4; --bg:#f7f7f5; }
+  @font-face { font-family:"Gotham"; font-weight:500;
+               src:url(__GOTHAM_MEDIUM__) format("opentype"); }
+  @font-face { font-family:"Gotham"; font-weight:700;
+               src:url(__GOTHAM_ULTRA__) format("opentype"); }
+
+  :root {
+    --gold:#FFA300; --burnt:#CF7F00; --black:#000000; --white:#FFFFFF;
+    --card:#111111; --bar:#262626; --muted:#9CA3AF; --red:#EF4444;
+  }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink);
-         font:14px/1.45 "Lato","Segoe UI",system-ui,sans-serif; }
-  header { padding:18px 24px 12px; border-bottom:1px solid var(--line); }
-  h1 { margin:0; font-size:19px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; }
-  header p { margin:5px 0 0; color:var(--mute); font-size:12px; max-width:900px; }
-  .views { display:flex; gap:1px; background:var(--line); }
-  .view { flex:1; background:var(--bg); min-width:0; }
-  .meta { padding:12px 16px 8px; }
-  .meta b { font-size:16px; }
-  .meta span { color:var(--mute); font-size:12px; }
-  .stats { display:flex; gap:20px; margin-top:6px; }
-  .stats i { display:block; color:var(--mute); font-style:normal; font-size:10px;
-             letter-spacing:.1em; text-transform:uppercase; }
-  .stats b { font-size:15px; font-weight:700; }
-  canvas { display:block; width:100%; height:470px; cursor:grab; }
+  body { margin:0; background:var(--black); color:var(--white);
+         font-family:"Lato",sans-serif; font-weight:400; font-size:14px; line-height:1.45; }
+  .gotham { font-family:"Gotham","Lato",sans-serif; text-transform:uppercase;
+            letter-spacing:.08em; }
+
+  header { display:flex; align-items:center; gap:20px; padding:20px 28px; background:var(--bar); }
+  header img { height:26px; }
+  header h1 { margin:0; font-size:20px; font-weight:700; }
+  header p { margin:2px 0 0; color:var(--muted); font-size:12px; max-width:820px; }
+  header b { color:var(--white); font-weight:700; }
+
+  .picker { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:16px 28px 0; }
+  .views { display:flex; gap:20px; padding:16px 28px 24px; align-items:stretch; }
+  .view { flex:1; min-width:0; background:var(--card); border-radius:8px; overflow:hidden; }
+  .view[hidden] { display:none; }
+  .meta { padding:16px 20px 10px; }
+  .meta h2 { margin:0; font-size:17px; font-weight:700; letter-spacing:.04em;
+             text-transform:none; }
+  .meta .sub { color:var(--muted); font-size:11px; margin-top:3px; }
+  .stats { display:flex; gap:26px; margin-top:12px; }
+  .stats i { display:block; color:var(--muted); font-style:normal; font-size:10px; }
+  .stats b { font-family:"Lato",sans-serif; font-size:22px; font-weight:700; letter-spacing:0; }
+  .stats b span { font-size:11px; font-weight:400; color:var(--muted); margin-left:2px; }
+  canvas { display:block; width:100%; height:420px; cursor:grab; }
   canvas:active { cursor:grabbing; }
+
   .bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
-         padding:12px 24px; border-top:1px solid var(--line); }
-  button { font:inherit; padding:5px 12px; border:1px solid var(--line); background:#fff;
-           border-radius:3px; cursor:pointer; }
-  button:hover { border-color:var(--ink); }
-  button.on { background:var(--ink); color:#fff; border-color:var(--ink); }
-  #scrub { flex:1; min-width:220px; }
-  #clock { font-variant-numeric:tabular-nums; min-width:120px; color:var(--mute); font-size:12px; }
-  .sep { width:1px; height:22px; background:var(--line); }
-  .lbl { font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--mute); }
+         padding:14px 28px; background:var(--bar); }
+  button { font-family:"Gotham","Lato",sans-serif; text-transform:uppercase; letter-spacing:.08em;
+           font-size:11px; font-weight:500; padding:8px 14px; border-radius:8px;
+           border:1px solid #262626; background:var(--card); color:var(--white); cursor:pointer; }
+  button:hover { border-color:var(--gold); color:var(--gold); }
+  button:focus { outline:2px solid var(--gold); outline-offset:1px; }
+  button.on { background:var(--gold); border-color:var(--gold); color:var(--black); }
+  button.on:hover { background:var(--burnt); border-color:var(--burnt); color:var(--black); }
+  #chips { display:flex; gap:8px; }
+  .picker button { font-size:12px; padding:9px 16px; text-transform:none;
+                   letter-spacing:.02em; }
+
+  #scrub { flex:1; min-width:220px; accent-color:var(--gold); }
+  #clock { font-variant-numeric:tabular-nums; min-width:126px; color:var(--muted); font-size:12px; }
+  .sep { width:1px; height:22px; background:#111111; }
+  .lbl { font-family:"Gotham","Lato",sans-serif; text-transform:uppercase; letter-spacing:.1em;
+         font-size:10px; color:var(--muted); }
 </style>
 
 <header>
-  <h1>Swing Skeletons &mdash; fastest clean swing</h1>
-  <p>Theia mocap at __FS__ Hz, drawn from segment end-points. Playback is <b>contact-aligned</b>:
-     tick 0 is ball contact for both hitters, so every frame compares the same instant of the swing.
-     Drag to orbit, scroll to zoom. Red dot is whole-body centre of mass.</p>
+  <img src="__LOGO__" alt="Driveline Baseball">
+  <div>
+    <h1 class="gotham">Swing Skeletons</h1>
+    <p>Theia mocap at __FS__ Hz, drawn from segment end-points. Playback is
+       <b>contact-aligned</b> &mdash; tick 0 is ball contact for every hitter, so each frame compares
+       the same instant of the swing. Drag to orbit, scroll to zoom.</p>
+  </div>
 </header>
+
+<div class="picker">
+  <span class="lbl">Hitter</span>
+  <span id="chips"></span>
+</div>
 <div class="views" id="views"></div>
+
 <div class="bar">
   <button id="play">Play</button>
   <input type="range" id="scrub">
@@ -234,24 +277,25 @@ HTML = r"""<!doctype html>
 const SWINGS = __DATA__;
 const NSEG = __NSEG__, BAT_SEG = NSEG - 1, COM = NSEG * 2, LINKS = __LINKS__;
 
-// tick 0 = contact; the shared range is the overlap of both swings
+// tick 0 = contact; the shared range is the overlap of every swing on screen
 const tMin = -Math.min(...SWINGS.map(s => s.contact));
 const tMax =  Math.min(...SWINGS.map(s => s.n - 1 - s.contact));
 
 const views = SWINGS.map(s => {
   const el = document.createElement('div');
   el.className = 'view';
-  el.innerHTML = '<div class="meta"><b>' + s.name + '</b> <span>&nbsp;' + s.hand + 'HH &middot; '
-    + s.date + ' &middot; ' + s.lab + ' &middot; ' + s.session_trial + '</span>'
+  el.innerHTML = '<div class="meta"><h2 class="gotham">' + s.name + '</h2>'
+    + '<div class="sub gotham">' + s.hand + 'HH &middot; ' + s.date + ' &middot; ' + s.lab
+    + ' &middot; ' + s.session_trial + '</div>'
     + '<div class="stats">'
-    + '<div><i>Bat speed</i><b>' + s.bat_speed + '</b> mph</div>'
-    + '<div><i>Exit velo</i><b>' + s.exit_velo + '</b> mph</div>'
-    + '<div><i>Attack angle</i><b>' + s.attack_angle + '</b> deg</div>'
+    + '<div><i class="gotham">Bat speed</i><b>' + s.bat_speed + '<span>mph</span></b></div>'
+    + '<div><i class="gotham">Exit velo</i><b>' + s.exit_velo + '<span>mph</span></b></div>'
+    + '<div><i class="gotham">Attack angle</i><b>' + s.attack_angle + '<span>deg</span></b></div>'
     + '</div></div><canvas></canvas>';
   document.getElementById('views').appendChild(el);
 
   // camera orbits the pelvis (averaged over the swing) but is anchored to the FLOOR in z, so
-  // both hitters share one ground line and stature is comparable between panels
+  // every hitter shares one ground line and stature is comparable between panels
   const c = [0, 0, 0];
   let nc = 0;
   for (const f of s.frames) {
@@ -260,7 +304,7 @@ const views = SWINGS.map(s => {
     nc++;
   }
   const cv = el.querySelector('canvas');
-  return { s, cv, ctx: cv.getContext('2d'), centre: c.map(v => v / nc),
+  return { s, el, cv, ctx: cv.getContext('2d'), centre: c.map(v => v / nc),
            yaw: 0, pitch: 0.12, zoom: 1, drag: null };
 });
 
@@ -273,6 +317,7 @@ function project(v, k) {
 }
 
 function draw(k, tick) {
+  if (k.el.hidden) return;
   const ctx = k.ctx, cv = k.cv;
   const dpr = window.devicePixelRatio || 1;
   const w = cv.clientWidth, h = cv.clientHeight;
@@ -280,14 +325,14 @@ function draw(k, tick) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  // fixed 2.6 m vertical field so both hitters are drawn at the same scale
-  const scale = k.zoom * h / 2.6;
-  const px = v => { const p = project(v, k); return [w / 2 + p[0] * scale, h * 0.86 - p[1] * scale]; };
+  // fixed 2.0 m vertical field so every hitter is drawn at the same scale
+  const scale = k.zoom * h / 2.0;
+  const px = v => { const p = project(v, k); return [w / 2 + p[0] * scale, h * 0.88 - p[1] * scale]; };
   const line = (a, b) => { const p = px(a), q = px(b);
     ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); };
 
   // floor grid on z = 0, centred under the hitter
-  ctx.strokeStyle = '#e3e3de'; ctx.lineWidth = 1;
+  ctx.strokeStyle = '#262626'; ctx.lineWidth = 1;
   const gx = k.centre[0], gy = k.centre[1];
   for (let g = -1.5; g <= 1.5001; g += 0.5) {
     line([gx + g, gy - 1.5, 0], [gx + g, gy + 1.5, 0]);
@@ -297,22 +342,22 @@ function draw(k, tick) {
   const f = k.s.frames[tick + k.s.contact];
   if (!f) return;
   ctx.lineCap = 'round';
-  ctx.strokeStyle = '#8e8e88'; ctx.lineWidth = 2;
-  for (const [i, j] of LINKS) {
-    if (f[i][0] === null || f[j][0] === null) continue;
-    line(f[i], f[j]);
+  ctx.strokeStyle = '#9CA3AF'; ctx.lineWidth = 2;
+  for (const pair of LINKS) {
+    if (f[pair[0]][0] === null || f[pair[1]][0] === null) continue;
+    line(f[pair[0]], f[pair[1]]);
   }
   for (let i = 0; i < NSEG; i++) {
     const a = f[i * 2], b = f[i * 2 + 1];
     if (a[0] === null || b[0] === null) continue;
-    ctx.strokeStyle = i === BAT_SEG ? '#FFA300' : '#2b2b2b';
+    ctx.strokeStyle = i === BAT_SEG ? '#FFA300' : '#FFFFFF';
     ctx.lineWidth = i === BAT_SEG ? 5 : 3.5;
     line(a, b);
   }
   const com = f[COM];
   if (com[0] !== null) {
     const p = px(com);
-    ctx.fillStyle = '#c0392b';
+    ctx.fillStyle = '#EF4444';
     ctx.beginPath(); ctx.arc(p[0], p[1], 4, 0, 7); ctx.fill();
   }
 }
@@ -330,6 +375,22 @@ function render() {
 }
 
 function stop() { playing = false; playBtn.textContent = 'Play'; playBtn.classList.remove('on'); }
+
+// hitter picker: toggle panels on and off, but never leave the page empty
+const chips = document.getElementById('chips');
+views.forEach((k, i) => {
+  const b = document.createElement('button');
+  b.textContent = k.s.name;
+  b.className = 'on';
+  b.onclick = () => {
+    const shown = views.filter(v => !v.el.hidden);
+    if (!k.el.hidden && shown.length === 1) return;
+    k.el.hidden = !k.el.hidden;
+    b.classList.toggle('on', !k.el.hidden);
+    render();
+  };
+  chips.appendChild(b);
+});
 
 function loop(ts) {
   if (playing) {
@@ -358,8 +419,9 @@ document.querySelectorAll('.spd').forEach(b => b.onclick = () => {
 });
 document.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
   const key = b.dataset.jump;
+  const shown = views.filter(v => !v.el.hidden);
   const t = key === 'contact' ? 0
-    : Math.round(SWINGS.reduce((a, s) => a + s[key] - s.contact, 0) / SWINGS.length);
+    : Math.round(shown.reduce((a, v) => a + v.s[key] - v.s.contact, 0) / shown.length);
   tick = Math.max(tMin, Math.min(tMax, t));
   stop(); render();
 });
@@ -417,7 +479,14 @@ def main():
     html = (HTML.replace("__DATA__", json.dumps(swings, separators=(",", ":")))
                 .replace("__LINKS__", json.dumps(links))
                 .replace("__NSEG__", str(len(SEGMENTS) + 1))
-                .replace("__FS__", f"{swings[0]['fs']:.0f}"))
+                .replace("__FS__", f"{swings[0]['fs']:.0f}")
+                .replace("__LOGO__", data_uri(
+                    BRAND / "icons" / "driveline-baseball_logo_full_orange_transparent.png",
+                    "image/png"))
+                .replace("__GOTHAM_MEDIUM__", data_uri(
+                    BRAND / "fonts" / "gotham_ssv" / "Gotham-Medium.otf", "font/otf"))
+                .replace("__GOTHAM_ULTRA__", data_uri(
+                    BRAND / "fonts" / "gotham_ssv" / "Gotham-Ultra.otf", "font/otf")))
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
