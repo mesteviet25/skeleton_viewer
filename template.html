@@ -1,0 +1,292 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Swing Skeletons</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
+<style>
+  @font-face { font-family:"Gotham"; font-weight:500;
+               src:url(__GOTHAM_MEDIUM__) format("opentype"); }
+  @font-face { font-family:"Gotham"; font-weight:700;
+               src:url(__GOTHAM_ULTRA__) format("opentype"); }
+
+  :root {
+    --gold:#FFA300; --burnt:#CF7F00; --black:#000000; --white:#FFFFFF;
+    --card:#111111; --bar:#262626; --muted:#9CA3AF; --red:#EF4444;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--black); color:var(--white);
+         font-family:"Lato",sans-serif; font-weight:400; font-size:14px; line-height:1.45; }
+  .gotham { font-family:"Gotham","Lato",sans-serif; text-transform:uppercase;
+            letter-spacing:.08em; }
+
+  header { display:flex; align-items:center; gap:20px; padding:20px 28px; background:var(--bar); }
+  header img { height:26px; }
+  header h1 { margin:0; font-size:20px; font-weight:700; }
+  header p { margin:2px 0 0; color:var(--muted); font-size:12px; max-width:860px; }
+  header b { color:var(--white); font-weight:700; }
+
+  .picker { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:16px 28px 0; }
+  .views { display:flex; gap:20px; padding:16px 28px 24px; align-items:stretch; }
+  .view { flex:1; min-width:0; background:var(--card); border-radius:8px; overflow:hidden; }
+  .view[hidden] { display:none; }
+  .meta { padding:16px 20px 10px; }
+  .meta h2 { margin:0; font-size:17px; font-weight:700; letter-spacing:.04em;
+             text-transform:none; }
+  .meta .sub { color:var(--muted); font-size:11px; margin-top:3px; }
+  .stats { display:flex; gap:26px; margin-top:12px; min-height:4px; }
+  .stats i { display:block; color:var(--muted); font-style:normal; font-size:10px; }
+  .stats b { font-family:"Lato",sans-serif; font-size:22px; font-weight:700; letter-spacing:0; }
+  .stats b span { font-size:11px; font-weight:400; color:var(--muted); margin-left:2px; }
+  canvas { display:block; width:100%; height:420px; cursor:grab; }
+  canvas:active { cursor:grabbing; }
+
+  .bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+         padding:14px 28px; background:var(--bar); }
+  button { font-family:"Gotham","Lato",sans-serif; text-transform:uppercase; letter-spacing:.08em;
+           font-size:11px; font-weight:500; padding:8px 14px; border-radius:8px;
+           border:1px solid #262626; background:var(--card); color:var(--white); cursor:pointer; }
+  button:hover { border-color:var(--gold); color:var(--gold); }
+  button:focus { outline:2px solid var(--gold); outline-offset:1px; }
+  button.on { background:var(--gold); border-color:var(--gold); color:var(--black); }
+  button.on:hover { background:var(--burnt); border-color:var(--burnt); color:var(--black); }
+  #chips, #jumps { display:flex; gap:8px; }
+  .picker button { font-size:12px; padding:9px 16px; text-transform:none;
+                   letter-spacing:.02em; }
+
+  #scrub { flex:1; min-width:220px; accent-color:var(--gold); }
+  #clock { font-variant-numeric:tabular-nums; min-width:132px; color:var(--muted); font-size:12px; }
+  .sep { width:1px; height:22px; background:#111111; }
+  .lbl { font-family:"Gotham","Lato",sans-serif; text-transform:uppercase; letter-spacing:.1em;
+         font-size:10px; color:var(--muted); }
+</style>
+
+<header>
+  <img src="__LOGO__" alt="Driveline Baseball">
+  <div>
+    <h1 class="gotham">Swing Skeletons</h1>
+    <p>Per-frame 3D positions, played on a shared <b>millisecond clock</b> so captures at different
+       sample rates line up. Tick 0 is ball contact where the source knows it, otherwise the start of
+       the capture. Segments are the source's own where it names them, else inferred from which
+       point pairs hold a constant distance. Drag to orbit, scroll to zoom.</p>
+  </div>
+</header>
+
+<div class="picker">
+  <span class="lbl">Show</span>
+  <span id="chips"></span>
+</div>
+<div class="views" id="views"></div>
+
+<div class="bar">
+  <button id="play">Play</button>
+  <input type="range" id="scrub">
+  <span id="clock"></span>
+  <span class="sep"></span>
+  <span class="lbl">Speed</span>
+  <button class="spd" data-s="0.1">0.1x</button>
+  <button class="spd on" data-s="0.25">0.25x</button>
+  <button class="spd" data-s="1">1x</button>
+  <span class="sep"></span>
+  <span class="lbl">Jump</span>
+  <span id="jumps"></span>
+  <span class="sep"></span>
+  <span class="lbl">View</span>
+  <button data-view="catcher">Catcher</button>
+  <button data-view="side">Side</button>
+  <button data-view="top">Top</button>
+</div>
+
+<script>
+const SWINGS = __DATA__;
+
+// The clock is milliseconds relative to each swing's own anchor, so a 300 Hz Theia capture and a
+// 360 Hz C3D play side by side without resampling either of them.
+const msOf = (s, frame) => (frame - s.anchor) / s.fs * 1000;
+
+const views = SWINGS.map(s => {
+  const el = document.createElement('div');
+  el.className = 'view';
+  el.innerHTML = '<div class="meta"><h2 class="gotham">' + s.label + '</h2>'
+    + '<div class="sub gotham">' + s.sub + '</div><div class="stats">'
+    + s.stats.map(st => '<div><i class="gotham">' + st[0] + '</i><b>' + st[1]
+                        + '<span>' + st[2] + '</span></b></div>').join('')
+    + '</div></div><canvas></canvas>';
+  document.getElementById('views').appendChild(el);
+
+  // camera orbits the point cloud's horizontal centre but is anchored to the FLOOR in z, so every
+  // panel shares one ground line and stature is comparable between them
+  const c = [0, 0];
+  let nc = 0;
+  for (const f of s.frames) for (const p of f) {
+    if (p[0] === null) continue;
+    c[0] += p[0]; c[1] += p[1]; nc++;
+  }
+  const cv = el.querySelector('canvas');
+  return { s, el, cv, ctx: cv.getContext('2d'), centre: [c[0] / nc, c[1] / nc, 0],
+           yaw: 0, pitch: 0.12, zoom: 1, drag: null };
+});
+
+// axis 0 and 1 are horizontal, axis 2 is vertical (sources.normalise guarantees it)
+function project(v, k) {
+  const x = v[0] - k.centre[0], y = v[1] - k.centre[1], z = v[2] - k.centre[2];
+  const cy = Math.cos(k.yaw), sy = Math.sin(k.yaw);
+  const right = -sy * x + cy * y, depth = cy * x + sy * y;
+  return [right, z * Math.cos(k.pitch) - depth * Math.sin(k.pitch)];
+}
+
+function draw(k, ms) {
+  if (k.el.hidden) return;
+  const s = k.s, ctx = k.ctx, cv = k.cv;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr)) { cv.width = w * dpr; cv.height = h * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  // fixed 2.0 m vertical field so every panel is drawn at the same scale
+  const scale = k.zoom * h / 2.0;
+  const px = v => { const p = project(v, k); return [w / 2 + p[0] * scale, h * 0.88 - p[1] * scale]; };
+  const line = (a, b) => { const p = px(a), q = px(b);
+    ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); };
+
+  // floor grid on z = 0, centred under the athlete
+  ctx.strokeStyle = '#262626'; ctx.lineWidth = 1;
+  const gx = k.centre[0], gy = k.centre[1];
+  for (let g = -1.5; g <= 1.5001; g += 0.5) {
+    line([gx + g, gy - 1.5, 0], [gx + g, gy + 1.5, 0]);
+    line([gx - 1.5, gy + g, 0], [gx + 1.5, gy + g, 0]);
+  }
+
+  const frame = Math.round(s.anchor + ms * s.fs / 1000);
+  const f = s.frames[frame];
+  if (!f) return;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < s.links.length; i++) {
+    const a = f[s.links[i][0]], b = f[s.links[i][1]];
+    if (a[0] === null || b[0] === null) continue;
+    ctx.strokeStyle = s.bat[i] ? '#FFA300' : '#FFFFFF';
+    ctx.lineWidth = s.bat[i] ? 5 : 3.5;
+    line(a, b);
+  }
+  // points no rigid pair reached are still real data -- draw them rather than drop them
+  const linked = new Set(s.links.flat());
+  ctx.fillStyle = '#9CA3AF';
+  for (let i = 0; i < f.length; i++) {
+    if (linked.has(i) || f[i][0] === null) continue;
+    const p = px(f[i]);
+    ctx.beginPath(); ctx.arc(p[0], p[1], 2.5, 0, 7); ctx.fill();
+  }
+  if (s.com !== null && f[s.com][0] !== null) {
+    const p = px(f[s.com]);
+    ctx.fillStyle = '#EF4444';
+    ctx.beginPath(); ctx.arc(p[0], p[1], 4, 0, 7); ctx.fill();
+  }
+}
+
+let ms = 0, playing = false, speed = 0.25, last = 0, msMin = 0, msMax = 0;
+const scrub = document.getElementById('scrub');
+const playBtn = document.getElementById('play');
+const jumps = document.getElementById('jumps');
+
+function shown() { return views.filter(v => !v.el.hidden); }
+
+function rescale() {
+  // the playable range is the overlap of whatever is on screen
+  const vs = shown();
+  msMin = Math.max(...vs.map(v => msOf(v.s, 0)));
+  msMax = Math.min(...vs.map(v => msOf(v.s, v.s.n - 1)));
+  scrub.min = Math.floor(msMin); scrub.max = Math.ceil(msMax); scrub.step = 1;
+  ms = Math.max(msMin, Math.min(msMax, ms));
+
+  // a jump button only makes sense for an event some visible panel actually has
+  const names = [...new Set(vs.flatMap(v => Object.keys(v.s.events)))];
+  jumps.innerHTML = '';
+  for (const name of names) {
+    const b = document.createElement('button');
+    b.textContent = name;
+    b.onclick = () => {
+      const have = vs.filter(v => name in v.s.events);
+      ms = have.reduce((a, v) => a + msOf(v.s, v.s.events[name]), 0) / have.length;
+      ms = Math.max(msMin, Math.min(msMax, ms));
+      stop(); render();
+    };
+    jumps.appendChild(b);
+  }
+  if (!names.length) jumps.innerHTML = '<span class="lbl">no events in this data</span>';
+}
+
+function render() {
+  for (const k of views) draw(k, ms);
+  scrub.value = ms;
+  const kinds = new Set(shown().map(v => v.s.anchor_kind));
+  const ref = kinds.size === 1 && kinds.has('contact') ? 'vs contact' : 'from start';
+  document.getElementById('clock').textContent =
+    (ms >= 0 ? '+' : '') + ms.toFixed(0) + ' ms ' + ref;
+}
+
+function stop() { playing = false; playBtn.textContent = 'Play'; playBtn.classList.remove('on'); }
+
+// picker: toggle panels, but never leave the page empty
+const chips = document.getElementById('chips');
+views.forEach(k => {
+  const b = document.createElement('button');
+  b.textContent = k.s.label;
+  b.className = 'on';
+  b.onclick = () => {
+    if (!k.el.hidden && shown().length === 1) return;
+    k.el.hidden = !k.el.hidden;
+    b.classList.toggle('on', !k.el.hidden);
+    rescale(); render();
+  };
+  chips.appendChild(b);
+});
+
+function loop(ts) {
+  if (playing) {
+    if (!last) last = ts;
+    ms += (ts - last) * speed;
+    last = ts;
+    if (ms > msMax) ms = msMin;
+    render();
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+playBtn.onclick = () => {
+  playing = !playing; last = 0;
+  playBtn.textContent = playing ? 'Pause' : 'Play';
+  playBtn.classList.toggle('on', playing);
+};
+scrub.oninput = e => { ms = +e.target.value; render(); };
+document.querySelectorAll('.spd').forEach(b => b.onclick = () => {
+  speed = +b.dataset.s; last = 0;
+  document.querySelectorAll('.spd').forEach(o => o.classList.toggle('on', o === b));
+});
+const PRESETS = { catcher: [0, 0.12], side: [Math.PI / 2, 0.12], top: [0, 1.45] };
+document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => {
+  const p = PRESETS[b.dataset.view];
+  for (const k of views) { k.yaw = p[0]; k.pitch = p[1]; k.zoom = 1; }
+  render();
+});
+
+for (const k of views) {
+  k.cv.onmousedown = e => { k.drag = [e.clientX, e.clientY]; };
+  window.addEventListener('mouseup', () => { k.drag = null; });
+  window.addEventListener('mousemove', e => {
+    if (!k.drag) return;
+    k.yaw += (e.clientX - k.drag[0]) * 0.01;
+    k.pitch = Math.max(-1.4, Math.min(1.5, k.pitch + (e.clientY - k.drag[1]) * 0.006));
+    k.drag = [e.clientX, e.clientY];
+    render();
+  });
+  k.cv.onwheel = e => {
+    e.preventDefault();
+    k.zoom = Math.max(0.4, Math.min(4, k.zoom * (e.deltaY < 0 ? 1.1 : 0.91)));
+    render();
+  };
+}
+window.addEventListener('resize', render);
+rescale();
+render();
+</script>
