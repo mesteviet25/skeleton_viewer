@@ -26,6 +26,30 @@
   header b { color:var(--white); font-weight:700; }
 
   .picker { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:16px 28px 0; }
+  .chip { display:inline-flex; }
+  .chip button { border-radius:8px 0 0 8px; }
+  .chip .drop { border-radius:0 8px 8px 0; border-left:none; padding:9px 10px; color:var(--muted); }
+  .chip .drop:hover { color:var(--red); border-color:var(--red); }
+
+  #browser { padding:16px 28px 0; }
+  #browser[hidden] { display:none; }
+  .bwrap { background:var(--card); border-radius:8px; overflow:hidden; }
+  .bhead { display:flex; align-items:center; gap:12px; padding:12px 16px; background:var(--bar); }
+  .bhead input { flex:1; min-width:180px; background:var(--black); color:var(--white);
+                 border:1px solid #333; border-radius:8px; padding:8px 12px;
+                 font-family:"Lato",sans-serif; font-size:13px; }
+  .bhead input:focus { outline:none; border-color:var(--gold); }
+  .brows { max-height:210px; overflow:auto; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { position:sticky; top:0; background:var(--card); color:var(--muted); text-align:left;
+       font-family:"Gotham","Lato",sans-serif; text-transform:uppercase; letter-spacing:.1em;
+       font-size:10px; font-weight:500; padding:8px 12px; border-bottom:1px solid #262626; }
+  td { padding:6px 12px; border-bottom:1px solid #1a1a1a; white-space:nowrap; }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover td { background:#1a1a1a; color:var(--gold); }
+  tbody tr.loaded td { color:var(--gold); }
+  th.num, td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .empty { padding:40px 28px; color:var(--muted); }
   .views { display:flex; gap:20px; padding:16px 28px 24px; align-items:stretch; }
   .view { flex:1; min-width:0; background:var(--card); border-radius:8px; overflow:hidden; }
   .view[hidden] { display:none; }
@@ -75,7 +99,25 @@
   <span class="lbl">Show</span>
   <span id="chips"></span>
 </div>
+<div id="browser" hidden>
+  <div class="bwrap">
+    <div class="bhead">
+      <span class="lbl">OpenBiomechanics</span>
+      <input id="q" placeholder="filter: trial, session, athlete, level, side, pitching, hitting">
+      <span class="lbl" id="count"></span>
+    </div>
+    <div class="brows">
+      <table>
+        <thead><tr><th>Set</th><th>Trial</th><th>Session</th><th>Athlete</th><th>Level</th>
+          <th>Side</th><th class="num">Age</th><th class="num">Speed</th>
+          <th class="num">Ht m</th><th class="num">Mass kg</th></tr></thead>
+        <tbody id="idx"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
 <div class="views" id="views"></div>
+<div class="empty" id="empty" hidden>Pick a trial above to load it.</div>
 
 <div class="bar">
   <button id="play">Play</button>
@@ -98,12 +140,16 @@
 
 <script>
 const SWINGS = __DATA__;
+const SERVED = __SERVED__;      // true only behind serve.py, which can hand over more trials
 
 // The clock is milliseconds relative to each swing's own anchor, so a 300 Hz Theia capture and a
-// 360 Hz C3D play side by side without resampling either of them.
+// 360 Hz OBP trial play side by side without resampling either of them.
 const msOf = (s, frame) => (frame - s.anchor) / s.fs * 1000;
 
-const views = SWINGS.map(s => {
+const views = [];
+const chips = document.getElementById('chips');
+
+function addSwing(s) {
   const el = document.createElement('div');
   el.className = 'view';
   el.innerHTML = '<div class="meta"><h2 class="gotham">' + s.label + '</h2>'
@@ -122,9 +168,38 @@ const views = SWINGS.map(s => {
     c[0] += p[0]; c[1] += p[1]; nc++;
   }
   const cv = el.querySelector('canvas');
-  return { s, el, cv, ctx: cv.getContext('2d'), centre: [c[0] / nc, c[1] / nc, 0],
-           yaw: 0, pitch: 0.12, zoom: 1, drag: null };
-});
+  const k = { s, el, cv, ctx: cv.getContext('2d'), centre: [c[0] / nc, c[1] / nc, 0],
+              yaw: s.yaw0, pitch: 0.12, zoom: 1, drag: null };
+  views.push(k);
+
+  // chip: the label toggles the panel, the x next to it drops the swing entirely
+  const chip = document.createElement('span');
+  chip.className = 'chip';
+  const b = document.createElement('button');
+  b.textContent = s.label;
+  b.className = 'on';
+  b.onclick = () => {
+    if (!k.el.hidden && shown().length === 1) return;
+    k.el.hidden = !k.el.hidden;
+    b.classList.toggle('on', !k.el.hidden);
+    rescale(); render();
+  };
+  chip.appendChild(b);
+  const x = document.createElement('button');
+  x.className = 'drop';
+  x.textContent = 'x';
+  x.title = 'remove';
+  x.onclick = () => {
+    k.el.remove(); chip.remove(); views.splice(views.indexOf(k), 1);
+    if (k.dropped) k.dropped();
+    rescale(); render();
+  };
+  chip.appendChild(x);
+  chips.appendChild(chip);
+
+  bindCamera(k);
+  return k;
+}
 
 // axis 0 and 1 are horizontal, axis 2 is vertical (sources.normalise guarantees it)
 function project(v, k) {
@@ -193,6 +268,8 @@ function shown() { return views.filter(v => !v.el.hidden); }
 function rescale() {
   // the playable range is the overlap of whatever is on screen
   const vs = shown();
+  document.getElementById('empty').hidden = vs.length > 0;
+  if (!vs.length) { jumps.innerHTML = ''; return; }
   msMin = Math.max(...vs.map(v => msOf(v.s, 0)));
   msMax = Math.min(...vs.map(v => msOf(v.s, v.s.n - 1)));
   scrub.min = Math.floor(msMin); scrub.max = Math.ceil(msMax); scrub.step = 1;
@@ -217,29 +294,15 @@ function rescale() {
 
 function render() {
   for (const k of views) draw(k, ms);
+  if (!shown().length) { document.getElementById('clock').textContent = ''; return; }
   scrub.value = ms;
   const kinds = new Set(shown().map(v => v.s.anchor_kind));
-  const ref = kinds.size === 1 && kinds.has('contact') ? 'vs contact' : 'from start';
+  const ref = kinds.size === 1 && !kinds.has('start') ? 'vs ' + [...kinds][0] : 'from start';
   document.getElementById('clock').textContent =
     (ms >= 0 ? '+' : '') + ms.toFixed(0) + ' ms ' + ref;
 }
 
 function stop() { playing = false; playBtn.textContent = 'Play'; playBtn.classList.remove('on'); }
-
-// picker: toggle panels, but never leave the page empty
-const chips = document.getElementById('chips');
-views.forEach(k => {
-  const b = document.createElement('button');
-  b.textContent = k.s.label;
-  b.className = 'on';
-  b.onclick = () => {
-    if (!k.el.hidden && shown().length === 1) return;
-    k.el.hidden = !k.el.hidden;
-    b.classList.toggle('on', !k.el.hidden);
-    rescale(); render();
-  };
-  chips.appendChild(b);
-});
 
 function loop(ts) {
   if (playing) {
@@ -270,7 +333,7 @@ document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => {
   render();
 });
 
-for (const k of views) {
+function bindCamera(k) {
   k.cv.onmousedown = e => { k.drag = [e.clientX, e.clientY]; };
   window.addEventListener('mouseup', () => { k.drag = null; });
   window.addEventListener('mousemove', e => {
@@ -287,6 +350,54 @@ for (const k of views) {
   };
 }
 window.addEventListener('resize', render);
+
+// ------------------------------------------------------------------- OBP browser (served only)
+if (SERVED) {
+  const browser = document.getElementById('browser');
+  const tbody = document.getElementById('idx');
+  const count = document.getElementById('count');
+  const q = document.getElementById('q');
+  browser.hidden = false;
+  const num = (v, d) => v === null || v === undefined ? '' : (+v).toFixed(d);
+
+  fetch('/api/index').then(r => r.json()).then(rows => {
+    for (const r of rows) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + r.dataset + '</td><td>' + r.trial + '</td><td>' + r.session
+        + '</td><td>' + r.user + '</td><td>' + (r.level || '') + '</td><td>' + (r.side || '')
+        + '</td><td class="num">' + num(r.age, 0) + '</td><td class="num">' + num(r.speed, 1)
+        + '</td><td class="num">' + num(r.height_m, 2) + '</td><td class="num">'
+        + num(r.mass_kg, 1) + '</td>';
+      tr.dataset.hay = [r.dataset, r.trial, r.session, r.user, r.level, r.side]
+        .join(' ').toLowerCase();
+      tr.onclick = () => {
+        if (tr.classList.contains('loaded')) return;
+        tr.classList.add('loaded');
+        fetch('/api/trial?dataset=' + r.dataset + '&id=' + encodeURIComponent(r.trial))
+          .then(res => res.ok ? res.json() : res.text().then(t => { throw new Error(t); }))
+          .then(sw => {
+            addSwing(sw).dropped = () => tr.classList.remove('loaded');
+            rescale(); render();
+          })
+          .catch(err => { tr.classList.remove('loaded'); alert(err.message); });
+      };
+      tbody.appendChild(tr);
+    }
+    count.textContent = rows.length + ' trials';
+    q.oninput = () => {
+      const t = q.value.trim().toLowerCase();
+      let n = 0;
+      for (const tr of tbody.children) {
+        const hit = !t || tr.dataset.hay.includes(t);
+        tr.hidden = !hit;
+        if (hit) n++;
+      }
+      count.textContent = n + ' trials';
+    };
+  });
+}
+
+SWINGS.forEach(addSwing);
 rescale();
 render();
 </script>

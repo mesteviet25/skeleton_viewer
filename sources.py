@@ -10,7 +10,8 @@ Every loader returns:
      "anchor": int,           # frame that becomes tick 0
      "anchor_kind": str,      # "contact" or "start" -- only changes the clock label
      "events": {name: frame},
-     "links": [(name, name), ...] or None}   # None -> infer_links() works it out
+     "links": [(name, name), ...] or None,   # None -> infer_links() works it out
+     "yaw0": float}           # starting camera yaw; the view buttons stay absolute
 
 Sources so far: Theia (`segment_positions_raw`), a wide CSV/parquet table, and C3D.
 """
@@ -18,6 +19,7 @@ import base64
 import gzip
 import json
 import re
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -271,3 +273,150 @@ def load_c3d(path):
             "sub": f"{Path(path).name} &middot; C3D &middot; {fs:.0f} Hz",
             "stats": [], "points": points, "fs": fs, "anchor": 0,
             "anchor_kind": "start", "events": {}, "links": None}
+
+
+# --------------------------------------------------------------------------- openbiomechanics
+
+# The public OBP release (github.com/drivelineresearch/openbiomechanics). `landmarks.csv` is one
+# joint-centre table per discipline holding every trial, already metres and z up, with each trial's
+# event times repeated on every row. Frames are split to one parquet per trial on first use because
+# the hitting CSV is 221 MB and a viewer request must not read it.
+OBP = {
+    "pitching": {
+        "module": "baseball_pitching", "key": "session_pitch", "fs": 360.0,
+        "events": {"peak knee height": "pkh_time", "foot plant": "fp_100_time",
+                   "MER": "MER_time", "release": "BR_time", "MIR": "MIR_time"},
+        "anchor": "release",
+        "stats": [("Pitch speed", "pitch_speed_mph", "mph")],
+        "links": [("rear_ankle_jc", "rear_knee_jc"), ("rear_knee_jc", "rear_hip"),
+                  ("lead_ankle_jc", "lead_knee_jc"), ("lead_knee_jc", "lead_hip"),
+                  ("rear_hip", "lead_hip"), ("rear_hip", "thorax_dist"), ("lead_hip", "thorax_dist"),
+                  ("thorax_dist", "thorax_prox"),
+                  ("thorax_prox", "shoulder_jc"), ("thorax_prox", "glove_shoulder_jc"),
+                  ("shoulder_jc", "elbow_jc"), ("elbow_jc", "wrist_jc"), ("wrist_jc", "hand_jc"),
+                  ("glove_shoulder_jc", "glove_elbow_jc"), ("glove_elbow_jc", "glove_wrist_jc"),
+                  ("glove_wrist_jc", "glove_hand_jc")],
+    },
+    "hitting": {
+        "module": "baseball_hitting", "key": "session_swing", "fs": 360.0,
+        "events": {"foot plant": "fp_100_time", "contact": "contact_time"},
+        "anchor": "contact",
+        "stats": [("Exit velo", "exit_velo_mph_x", "mph"),
+                  ("Bat speed", "bat_speed_mph_contact_x", "mph"),
+                  ("Attack angle", "attack_angle_contact_x", "deg")],
+        # l/r hjc are HAND joint centres, not hips -- the hips are `left_hip` / `right_hip`
+        "links": [("lajc", "lkjc"), ("lkjc", "left_hip"), ("rajc", "rkjc"), ("rkjc", "right_hip"),
+                  ("left_hip", "right_hip"),
+                  ("left_hip", "thorax_dist"), ("right_hip", "thorax_dist"),
+                  ("thorax_dist", "thorax_prox"),
+                  ("thorax_prox", "lsjc"), ("thorax_prox", "rsjc"),
+                  ("lsjc", "lejc"), ("lejc", "lwjc"), ("lwjc", "lhjc"),
+                  ("rsjc", "rejc"), ("rejc", "rwjc"), ("rwjc", "rhjc"),
+                  ("lhjc", "bat_prox"), ("rhjc", "bat_prox"), ("bat_prox", "bat_dist")],
+    },
+}
+
+# `centerofmass` gets the red CoM dot the viewer draws, and the Blast hand / sweet spot pair is the
+# bat, named the way the Theia loader names it so both sources render it in goldenrod.
+OBP_RENAME = {"centerofmass": "com", "blast_hand": "bat_prox", "sweet_spot": "bat_dist"}
+
+
+def obp_trials(root, dataset):
+    """Split `landmarks.csv` into one parquet per trial, once. Returns the directory."""
+    import pandas as pd
+
+    spec = OBP[dataset]
+    full_sig = Path(root) / spec["module"] / "data" / "full_sig"
+    out = full_sig / "by_trial"
+    if out.is_dir():
+        return out
+    zip_path = full_sig / "landmarks.zip"
+    if not zip_path.exists():
+        raise SystemExit(f"{zip_path} missing -- run the OBP downloader for {dataset}")
+    tmp = out.with_name("by_trial.part")
+    tmp.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as z, z.open("landmarks.csv") as f:
+        df = pd.read_csv(f)
+    for trial, g in df.groupby(spec["key"], sort=False):
+        g.to_parquet(tmp / f"{trial}.parquet", index=False)
+    tmp.rename(out)
+    print(f"split {len(df)} {dataset} rows into {len(list(out.iterdir()))} trials -> {out}")
+    return out
+
+
+def obp_index(root):
+    """One row per OBP trial, for the picker: ids, athlete context, and the headline metric."""
+    import pandas as pd
+
+    rows = []
+    for dataset, spec in OBP.items():
+        data = Path(root) / spec["module"] / "data"
+        m = pd.read_csv(data / "metadata.csv")
+        common = {"dataset": dataset, "trial": m[spec["key"]].astype(str),
+                  "session": m["session"], "user": m["user"]}
+        if dataset == "pitching":
+            # handedness is the one picker field that lives in the POI table, not metadata
+            m = m.merge(pd.read_csv(data / "poi" / "poi_metrics.csv",
+                                    usecols=["session_pitch", "p_throws"]),
+                        on="session_pitch", how="left")
+            out = pd.DataFrame({**common, "level": m["playing_level"], "age": m["age_yrs"],
+                                "side": m["p_throws"], "speed": m["pitch_speed_mph"],
+                                "height_m": m["session_height_m"], "mass_kg": m["session_mass_kg"]})
+        else:
+            out = pd.DataFrame({**common, "level": m["highest_playing_level"],
+                                "age": m["athlete_age"], "side": m["hitter_side"],
+                                "speed": m["exit_velo_mph_x"],
+                                "height_m": m["session_height_in"] * 0.0254,
+                                "mass_kg": m["session_mass_lbs"] * 0.45359237})
+        out = out.astype(object)                       # NaN is not JSON; None survives only as object
+        rows += out.where(pd.notna(out), None).to_dict("records")
+    return rows
+
+
+def load_obp(root, dataset, trial_id):
+    """One OpenBiomechanics trial: joint centres plus the event times stored beside them."""
+    import pandas as pd
+
+    spec = OBP[dataset]
+    path = obp_trials(root, dataset) / f"{trial_id}.parquet"
+    if not path.exists():
+        raise SystemExit(f"no {dataset} trial {trial_id!r} in {path.parent}")
+    df = pd.read_parquet(path)
+    t = df["time"].to_numpy(dtype=float)
+    fs = spec["fs"]
+
+    points = {}
+    for col in df.columns:
+        m = COORD.match(col)
+        if m:
+            points.setdefault(m["point"], {})[m["axis"].lower()] = df[col].to_numpy(dtype=float)
+    points = {OBP_RENAME.get(k, k): np.stack([v["x"], v["y"], v["z"]], axis=1)
+              for k, v in points.items() if len(v) == 3}
+
+    # event columns repeat one time per row; they are seconds on the same clock as `time`
+    events = {}
+    for name, col in spec["events"].items():
+        val = df[col].iloc[0]
+        if pd.notna(val):
+            events[name] = int(np.argmin(np.abs(t - float(val))))
+    anchor = events.get(spec["anchor"], 0)
+
+    meta = pd.read_csv(Path(root) / spec["module"] / "data" / "metadata.csv")
+    meta = meta[meta[spec["key"]].astype(str) == str(trial_id)]
+    poi = pd.read_csv(Path(root) / spec["module"] / "data" / "poi" / "poi_metrics.csv")
+    poi = poi[poi[spec["key"]].astype(str) == str(trial_id)]
+    row = {**meta.iloc[0].to_dict(), **poi.iloc[0].to_dict()}
+    stats = [(label, round(float(row[col]), 1), unit) for label, col, unit in spec["stats"]
+             if pd.notna(row[col])]
+    side = row.get("p_throws") or row.get("hitter_side") or "?"
+    level = row.get("playing_level") or row.get("highest_playing_level") or "?"
+
+    return {
+        "label": f"{dataset[:4].upper()} {trial_id}",
+        "sub": f"{side} &middot; {level} &middot; OBP {dataset} &middot; {fs:.0f} Hz",
+        "stats": stats, "points": points, "fs": fs,
+        "anchor": anchor, "anchor_kind": spec["anchor"] if anchor else "start",
+        "events": events, "links": spec["links"],
+        # OBP x runs pitcher -> plate, so yaw 0 (catcher) foreshortens the stride: open side-on
+        "yaw0": np.pi / 2,
+    }

@@ -5,6 +5,7 @@ Sources (repeatable `--swing kind:target[:trial_id]`, bare names still mean Thei
     build.py "Addie Murphy" "Peyton Hendrix"
     build.py --swing theia:"Addie Murphy" --swing csv:landmarks.csv:1031_2
     build.py --swing c3d:000001_000015_72_180_4_FF_850.c3d          # needs --with ezc3d
+    build.py --swing obp:pitching:1031_2 --swing obp:hitting:6_1    # openbiomechanics trials
     build.py --swing theia:"Addie Murphy" --export-csv dist/
 
 Output: dist/viewer.html -- one offline file, athlete PII, stays on this machine.
@@ -21,6 +22,7 @@ import sources
 
 REPO = Path(__file__).resolve().parent
 BRAND = Path.home() / ".claude" / "skills" / "driveline-baseball-design"
+OBP_ROOT = Path.home() / "research" / "third_party" / "openbiomechanics"
 
 
 def get_secret(name):
@@ -98,19 +100,33 @@ def prepare(sw, up):
         "label": sw["label"], "sub": sw["sub"], "stats": sw["stats"],
         "fs": sw["fs"], "n": int(frames.shape[0]), "anchor": sw["anchor"],
         "anchor_kind": sw["anchor_kind"], "events": sw["events"],
-        "links": links, "bat": bat,
+        "links": links, "bat": bat, "yaw0": sw.get("yaw0", 0.0),
         "com": idx.get("com"),
         "frames": [[[None if not np.isfinite(v) else v for v in p] for p in f] for f in frames],
     }
 
 
+def render(swings, served=False):
+    """Fill the template. `served` turns on the OBP browser, which needs a server behind it."""
+    return (Path(REPO / "template.html").read_text(encoding="utf-8")
+            .replace("__DATA__", json.dumps(swings, separators=(",", ":")))
+            .replace("__SERVED__", "true" if served else "false")
+            .replace("__LOGO__", data_uri(
+                BRAND / "icons" / "driveline-baseball_logo_full_orange_transparent.png",
+                "image/png"))
+            .replace("__GOTHAM_MEDIUM__", data_uri(
+                BRAND / "fonts" / "gotham_ssv" / "Gotham-Medium.otf", "font/otf"))
+            .replace("__GOTHAM_ULTRA__", data_uri(
+                BRAND / "fonts" / "gotham_ssv" / "Gotham-Ultra.otf", "font/otf")))
+
+
 def parse_spec(spec):
-    """`theia:Name` / `csv:path[:trial]` / `parquet:path[:trial]` / `c3d:path`."""
+    """`theia:Name` / `csv:path[:trial]` / `parquet:path[:trial]` / `c3d:path` / `obp:dataset:trial`."""
     kind, _, rest = spec.partition(":")
     if not rest:
         return "theia", spec, None
     kind = kind.lower()
-    if kind not in ("theia", "csv", "parquet", "c3d"):
+    if kind not in ("theia", "csv", "parquet", "c3d", "obp"):
         return "theia", spec, None
     # a Windows path keeps its drive letter: only split a trial id off the tail
     target, sep, trial = rest.rpartition(":")
@@ -123,6 +139,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("names", nargs="*", help="Theia athlete names (shorthand for --swing theia:)")
     ap.add_argument("--swing", action="append", default=[], help="kind:target[:trial_id]")
+    ap.add_argument("--obp", default=str(OBP_ROOT), help="openbiomechanics checkout")
     ap.add_argument("--db", default="theia_softball_hitting_db")
     ap.add_argument("--fs", type=float, help="sample rate for a table with no `time` column")
     ap.add_argument("--up", default="auto", choices=["auto", "x", "y", "z"])
@@ -141,6 +158,8 @@ def main():
             loaded.append(sources.load_theia(conn.cursor(), target))
         elif kind == "c3d":
             loaded.append(sources.load_c3d(target))
+        elif kind == "obp":
+            loaded.append(sources.load_obp(args.obp, target, trial))
         else:
             loaded.append(sources.load_table(target, trial, args.fs))
     if conn:
@@ -152,15 +171,7 @@ def main():
 
     swings = [prepare(sw, args.up) for sw in loaded]
 
-    html = (Path(REPO / "template.html").read_text(encoding="utf-8")
-            .replace("__DATA__", json.dumps(swings, separators=(",", ":")))
-            .replace("__LOGO__", data_uri(
-                BRAND / "icons" / "driveline-baseball_logo_full_orange_transparent.png",
-                "image/png"))
-            .replace("__GOTHAM_MEDIUM__", data_uri(
-                BRAND / "fonts" / "gotham_ssv" / "Gotham-Medium.otf", "font/otf"))
-            .replace("__GOTHAM_ULTRA__", data_uri(
-                BRAND / "fonts" / "gotham_ssv" / "Gotham-Ultra.otf", "font/otf")))
+    html = render(swings)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
